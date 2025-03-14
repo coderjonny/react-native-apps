@@ -1,4 +1,4 @@
-# React Native Assessments
+# React Native Assessments and Demo Apps
 
 This repository contains coding assessments for React Native developers using the Hacker News API or some other APIs. The assessments test a developer's ability to create React Native applications with proper state management, API integration, and user experience.
 
