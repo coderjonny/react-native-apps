@@ -1,30 +1,36 @@
-import React, { useState, useRef } from "react";
-import {
-  StyleSheet,
-  View,
-  TouchableOpacity,
-  Text,
-  Dimensions,
-} from "react-native";
+import React, { useState, useRef, useEffect } from "react";
+import { StyleSheet, View, TouchableOpacity, Text, Dimensions, Animated } from "react-native";
 import { GameEngine } from "react-native-game-engine";
 
-// Get screen dimensions
+// Screen dimensions
 const { width, height } = Dimensions.get("window");
 
-// Configuration
-const CONFIG = {
-  BOID: { SIZE: 10, COUNT: 100, MAX_SPEED: 5 },
-  FORCES: {
-    SEPARATION: { DISTANCE: 30, STRENGTH: 2 },
-    ALIGNMENT: { DISTANCE: 50, STRENGTH: 1 },
-    COHESION: { DISTANCE: 70, STRENGTH: 1 },
-    TARGET: { STRENGTH: 2 },
-  },
-};
+// Simulation constants
+const BOID_SIZE = 10;
+const BOID_COUNT = 200;
+const MAX_SPEED = 5;
+const SEPARATION_DISTANCE = 40;
+const ALIGNMENT_DISTANCE = 50;
+const COHESION_DISTANCE = 70;
+const SEPARATION_FORCE = 2.5;
+const ALIGNMENT_FORCE = 1;
+const COHESION_FORCE = 1;
+const TARGET_FORCE = 2;
 
-/**
- * Boid visual component
- */
+// Add this after the other constants
+const TAP_INDICATOR_SIZE = 40;
+const TAP_INDICATOR_DURATION = 800;
+
+// Create a boid entity
+const createBoid = (x, y, angle) => ({
+  position: { x, y },
+  velocity: { x: Math.cos(angle) * 2, y: Math.sin(angle) * 2 },
+  size: BOID_SIZE,
+  angle,
+  renderer: <Boid />,
+});
+
+// Boid visual component
 const Boid = ({ size, position, angle }) => (
   <View
     style={[
@@ -38,185 +44,123 @@ const Boid = ({ size, position, angle }) => (
       },
     ]}
   >
-    <View style={[styles.wing, { width: size * 1.5, height: size / 3 }]} />
+    <View style={styles.wing} />
   </View>
 );
 
-/**
- * Vector utilities
- */
-const Vector = {
-  distance: (a, b) => {
-    const dx = a.position.x - b.position.x;
-    const dy = a.position.y - b.position.y;
-    return Math.sqrt(dx * dx + dy * dy);
-  },
-
-  normalize: (vector, magnitude) => {
-    const length = Math.sqrt(vector.x * vector.x + vector.y * vector.y);
-    if (length === 0) return { x: 0, y: 0 };
-    return {
-      x: (vector.x / length) * magnitude,
-      y: (vector.y / length) * magnitude,
-    };
-  },
-
-  limitSpeed: (velocity) => {
-    const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
-    if (speed > CONFIG.BOID.MAX_SPEED) {
-      return {
-        x: (velocity.x / speed) * CONFIG.BOID.MAX_SPEED,
-        y: (velocity.y / speed) * CONFIG.BOID.MAX_SPEED,
-      };
-    }
-    return velocity;
-  },
+// Utility functions
+const distance = (boid1, boid2) => {
+  const dx = boid1.position.x - boid2.position.x;
+  const dy = boid1.position.y - boid2.position.y;
+  return Math.sqrt(dx * dx + dy * dy);
 };
 
-/**
- * Create a new boid entity
- */
-const createBoid = (x, y, angle) => ({
-  position: { x, y },
-  velocity: {
-    x: Math.cos(angle) * 2,
-    y: Math.sin(angle) * 2,
-  },
-  size: CONFIG.BOID.SIZE,
-  angle,
-  renderer: <Boid />,
-});
+const normalize = (vector, magnitude) => {
+  const length = Math.sqrt(vector.x * vector.x + vector.y * vector.y);
+  return length === 0
+    ? { x: 0, y: 0 }
+    : { x: (vector.x / length) * magnitude, y: (vector.y / length) * magnitude };
+};
 
-/**
- * Main flocking simulation system
- */
+const limitSpeed = (velocity) => {
+  const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
+  return speed > MAX_SPEED
+    ? { x: (velocity.x / speed) * MAX_SPEED, y: (velocity.y / speed) * MAX_SPEED }
+    : velocity;
+};
+
+// Main flocking physics system
 const FlockingSystem = (entities, { touches }) => {
-  const boids = Object.keys(entities).filter((key) => key !== "target");
+  const boids = Object.values(entities).filter((e) => e.size === BOID_SIZE);
   const target = entities.target;
 
-  // Handle touches to set target
-  if (touches.length > 0 && touches[0].type === "end") {
-    const touch = touches[0].event;
-    if (touch.pageX) {
-      target.position = { x: touch.pageX, y: touch.pageY };
-    }
+  // Handle touches to set target position
+  if (touches.length > 0 && touches[0].type === "end" && touches[0].event?.pageX) {
+    target.position = { x: touches[0].event.pageX, y: touches[0].event.pageY };
   }
 
-  // Update each boid
-  boids.forEach((boidId) => {
-    const boid = entities[boidId];
+  boids.forEach((boid) => {
+    let separationForce = { x: 0, y: 0 };
+    let alignmentForce = { x: 0, y: 0 };
+    let cohesionForce = { x: 0, y: 0 };
+    let separationCount = 0;
+    let alignmentCount = 0;
+    let cohesionCount = 0;
 
-    // Initialize forces
-    let forces = {
-      separation: { x: 0, y: 0, count: 0 },
-      alignment: { x: 0, y: 0, count: 0 },
-      cohesion: { x: 0, y: 0, count: 0 },
-    };
+    boids.forEach((otherBoid) => {
+      if (boid !== otherBoid) {
+        const dist = distance(boid, otherBoid);
 
-    // Calculate interactions with other boids
-    boids.forEach((otherId) => {
-      if (boidId !== otherId) {
-        const otherBoid = entities[otherId];
-        const dist = Vector.distance(boid, otherBoid);
-
-        // Separation - avoid crowding
-        if (dist < CONFIG.FORCES.SEPARATION.DISTANCE) {
-          forces.separation.x += boid.position.x - otherBoid.position.x;
-          forces.separation.y += boid.position.y - otherBoid.position.y;
-          forces.separation.count++;
+        // Separation
+        if (dist < SEPARATION_DISTANCE) {
+          separationForce.x += boid.position.x - otherBoid.position.x;
+          separationForce.y += boid.position.y - otherBoid.position.y;
+          separationCount++;
         }
 
-        // Alignment - steer towards average heading
-        if (dist < CONFIG.FORCES.ALIGNMENT.DISTANCE) {
-          forces.alignment.x += otherBoid.velocity.x;
-          forces.alignment.y += otherBoid.velocity.y;
-          forces.alignment.count++;
+        // Alignment
+        if (dist < ALIGNMENT_DISTANCE) {
+          alignmentForce.x += otherBoid.velocity.x;
+          alignmentForce.y += otherBoid.velocity.y;
+          alignmentCount++;
         }
 
-        // Cohesion - move toward center of mass
-        if (dist < CONFIG.FORCES.COHESION.DISTANCE) {
-          forces.cohesion.x += otherBoid.position.x;
-          forces.cohesion.y += otherBoid.position.y;
-          forces.cohesion.count++;
+        // Cohesion
+        if (dist < COHESION_DISTANCE) {
+          cohesionForce.x += otherBoid.position.x;
+          cohesionForce.y += otherBoid.position.y;
+          cohesionCount++;
         }
       }
     });
 
-    // Process and apply forces
-    const appliedForces = {
-      separation: { x: 0, y: 0 },
-      alignment: { x: 0, y: 0 },
-      cohesion: { x: 0, y: 0 },
-      target: { x: 0, y: 0 },
-    };
-
-    // Separation
-    if (forces.separation.count > 0) {
-      forces.separation.x /= forces.separation.count;
-      forces.separation.y /= forces.separation.count;
-      appliedForces.separation = Vector.normalize(
-        forces.separation,
-        CONFIG.FORCES.SEPARATION.STRENGTH
+    // Calculate final forces
+    if (separationCount > 0) {
+      separationForce = normalize(
+        { x: separationForce.x / separationCount, y: separationForce.y / separationCount },
+        SEPARATION_FORCE
       );
     }
-
-    // Alignment
-    if (forces.alignment.count > 0) {
-      forces.alignment.x /= forces.alignment.count;
-      forces.alignment.y /= forces.alignment.count;
-      appliedForces.alignment = Vector.normalize(
-        forces.alignment,
-        CONFIG.FORCES.ALIGNMENT.STRENGTH
+    if (alignmentCount > 0) {
+      alignmentForce = normalize(
+        { x: alignmentForce.x / alignmentCount, y: alignmentForce.y / alignmentCount },
+        ALIGNMENT_FORCE
       );
     }
-
-    // Cohesion
-    if (forces.cohesion.count > 0) {
-      forces.cohesion.x =
-        forces.cohesion.x / forces.cohesion.count - boid.position.x;
-      forces.cohesion.y =
-        forces.cohesion.y / forces.cohesion.count - boid.position.y;
-      appliedForces.cohesion = Vector.normalize(
-        forces.cohesion,
-        CONFIG.FORCES.COHESION.STRENGTH
-      );
-    }
-
-    // Target seeking
-    if (target) {
-      appliedForces.target = Vector.normalize(
+    if (cohesionCount > 0) {
+      cohesionForce = normalize(
         {
-          x: target.position.x - boid.position.x,
-          y: target.position.y - boid.position.y,
+          x: cohesionForce.x / cohesionCount - boid.position.x,
+          y: cohesionForce.y / cohesionCount - boid.position.y,
         },
-        CONFIG.FORCES.TARGET.STRENGTH
+        COHESION_FORCE
       );
     }
 
-    // Apply combined forces to velocity
-    boid.velocity.x +=
-      appliedForces.separation.x +
-      appliedForces.alignment.x +
-      appliedForces.cohesion.x +
-      appliedForces.target.x;
+    // Apply target force
+    const targetForce = target?.position
+      ? normalize(
+          {
+            x: target.position.x - boid.position.x,
+            y: target.position.y - boid.position.y,
+          },
+          TARGET_FORCE
+        )
+      : { x: 0, y: 0 };
 
-    boid.velocity.y +=
-      appliedForces.separation.y +
-      appliedForces.alignment.y +
-      appliedForces.cohesion.y +
-      appliedForces.target.y;
+    // Update velocity
+    boid.velocity.x += separationForce.x + alignmentForce.x + cohesionForce.x + targetForce.x;
+    boid.velocity.y += separationForce.y + alignmentForce.y + cohesionForce.y + targetForce.y;
 
-    // Limit speed
-    boid.velocity = Vector.limitSpeed(boid.velocity);
-
-    // Update position
+    // Limit speed and update position
+    boid.velocity = limitSpeed(boid.velocity);
     boid.position.x += boid.velocity.x;
     boid.position.y += boid.velocity.y;
 
-    // Update angle for visual rotation
+    // Update angle
     boid.angle = Math.atan2(boid.velocity.y, boid.velocity.x);
 
-    // Wrap around edges of screen
+    // Screen wrapping
     if (boid.position.x > width) boid.position.x = 0;
     if (boid.position.x < 0) boid.position.x = width;
     if (boid.position.y > height) boid.position.y = 0;
@@ -226,53 +170,107 @@ const FlockingSystem = (entities, { touches }) => {
   return entities;
 };
 
-/**
- * Main component
- */
-export default function BoidsSimulation() {
+export default function App() {
   const [running, setRunning] = useState(true);
   const gameEngineRef = useRef(null);
+  // Add state for tap indicator
+  const [tapIndicator, setTapIndicator] = useState(null);
+  const fadeAnim = useRef(new Animated.Value(0.8)).current;
 
-  // Create initial entities
+  // Add effect to handle tap animation
+  useEffect(() => {
+    if (tapIndicator) {
+      // Reset opacity and start animation
+      fadeAnim.setValue(0.8);
+      Animated.timing(fadeAnim, {
+        toValue: 0,
+        duration: TAP_INDICATOR_DURATION,
+        useNativeDriver: true,
+      }).start(() => {
+        setTapIndicator(null);
+      });
+    }
+  }, [tapIndicator]);
+
   const setupEntities = () => {
     const entities = {};
-
-    // Create boids
-    for (let i = 0; i < CONFIG.BOID.COUNT; i++) {
-      entities[`boid_${i}`] = createBoid(
-        Math.random() * width,
-        Math.random() * height,
-        Math.random() * 2 * Math.PI
-      );
+    for (let i = 0; i < BOID_COUNT; i++) {
+      const x = Math.random() * width;
+      const y = Math.random() * height;
+      const angle = Math.random() * 2 * Math.PI;
+      entities[`boid_${i}`] = createBoid(x, y, angle);
     }
-
-    // Add target entity
-    entities.target = {
-      position: { x: width / 2, y: height / 2 },
-      renderer: <View style={styles.target} />,
-    };
-
+    entities.target = { position: { x: width / 2, y: height / 2 } };
     return entities;
   };
 
+  // Add tap handler to capture taps 
+  const handleScreenTouch = (e) => {
+    if (!running) return;
+    
+    const { pageX, pageY } = e.nativeEvent;
+    // Set target position for boids
+    gameEngineRef.current?.dispatch({ type: "tap", x: pageX, y: pageY });
+    // Show tap indicator
+    setTapIndicator({ x: pageX, y: pageY });
+  };
+
+  // Update FlockingSystem to handle our custom events
+  const systemsWithEvents = [
+    (entities, { touches, events = [] }) => {
+      const target = entities.target;
+      
+      // Handle custom events
+      events.forEach(e => {
+        if (e.type === "tap" && target) {
+          target.position = { x: e.x, y: e.y };
+        }
+      });
+      
+      return FlockingSystem(entities, { touches });
+    }
+  ];
+
   return (
     <View style={styles.container}>
-      <GameEngine
-        ref={gameEngineRef}
-        style={styles.gameContainer}
-        systems={[FlockingSystem]}
-        entities={setupEntities()}
-        running={running}
-      />
-
+      <TouchableOpacity 
+        activeOpacity={1} 
+        style={styles.touchableArea}
+        onPress={handleScreenTouch}
+      >
+        <GameEngine
+          ref={gameEngineRef}
+          style={styles.gameContainer}
+          systems={systemsWithEvents}
+          entities={setupEntities()}
+          running={running}
+        />
+        
+        {/* Tap indicator */}
+        {tapIndicator && (
+          <Animated.View 
+            style={[
+              styles.tapIndicator, 
+              { 
+                left: tapIndicator.x - TAP_INDICATOR_SIZE/2, 
+                top: tapIndicator.y - TAP_INDICATOR_SIZE/2,
+                opacity: fadeAnim,
+                transform: [{
+                  scale: fadeAnim.interpolate({
+                    inputRange: [0, 0.8],
+                    outputRange: [1.5, 1]
+                  })
+                }]
+              }
+            ]} 
+          />
+        )}
+      </TouchableOpacity>
+      
       <View style={styles.controls}>
-        <TouchableOpacity
-          style={styles.button}
-          onPress={() => setRunning(!running)}
-        >
+        <TouchableOpacity style={styles.button} onPress={() => setRunning(!running)}>
           <Text style={styles.buttonText}>{running ? "Stop" : "Start"}</Text>
         </TouchableOpacity>
-
         <TouchableOpacity
           style={styles.button}
           onPress={() => gameEngineRef.current?.swap(setupEntities())}
@@ -280,38 +278,30 @@ export default function BoidsSimulation() {
           <Text style={styles.buttonText}>Reset</Text>
         </TouchableOpacity>
       </View>
-
-      <Text style={styles.instructions}>Tap anywhere to guide the flock</Text>
+      <Text style={styles.instructions}>Tap to guide the swarm</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  gameContainer: {
-    flex: 1,
-    backgroundColor: "#87CEEB",
-  },
+  container: { flex: 1 },
+  touchableArea: { flex: 1 },
+  gameContainer: { flex: 1, backgroundColor: "#87CEEB" },
   boid: {
     position: "absolute",
     backgroundColor: "yellow",
-    borderRadius: CONFIG.BOID.SIZE / 2,
+    borderRadius: BOID_SIZE / 2,
   },
   wing: {
     position: "absolute",
+    width: BOID_SIZE * 1.5,
+    height: BOID_SIZE / 3,
     backgroundColor: "black",
-    left: -CONFIG.BOID.SIZE / 4,
-    top: CONFIG.BOID.SIZE / 3,
-    borderRadius: CONFIG.BOID.SIZE / 2,
+    left: -BOID_SIZE / 4,
+    top: BOID_SIZE / 3,
+    borderRadius: BOID_SIZE / 2,
   },
-  controls: {
-    position: "absolute",
-    top: 40,
-    right: 20,
-    flexDirection: "row",
-  },
+  controls: { position: "absolute", top: 40, right: 20, flexDirection: "row" },
   button: {
     backgroundColor: "rgba(0,0,0,0.5)",
     paddingHorizontal: 15,
@@ -319,10 +309,7 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     borderRadius: 5,
   },
-  buttonText: {
-    color: "white",
-    fontWeight: "bold",
-  },
+  buttonText: { color: "white", fontWeight: "bold" },
   instructions: {
     position: "absolute",
     bottom: 30,
@@ -332,17 +319,19 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 5,
   },
-  target: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+  // Add tap indicator style
+  tapIndicator: {
+    position: 'absolute',
+    width: TAP_INDICATOR_SIZE,
+    height: TAP_INDICATOR_SIZE,
+    borderRadius: TAP_INDICATOR_SIZE / 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.6)',
     borderWidth: 2,
-    borderColor: "red",
-    backgroundColor: "transparent",
+    borderColor: 'white',
+    zIndex: 10,
   },
 });
 
-// Empty component for the home screen
 export function HomeScreen() {
   return <View />;
 }
