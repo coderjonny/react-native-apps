@@ -5,12 +5,8 @@ This repository contains coding assessments for React Native developers using th
 ## Repository Structure
 
 ```
-├── hacker-news-task/
-│   └── blank assessment
-├── hacker-news-task-solution/
-│   └── solution to assessment
 ├── shopping-cart
-│   └── blank assessment
+│   └── Shopping Cart with Context API assessment
 └── README.md (this file)
 ```
 
