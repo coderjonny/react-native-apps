@@ -9,6 +9,8 @@ This repository contains coding assessments for React Native developers using th
 │   └── blank assessment
 ├── hacker-news-task-solution/
 │   └── solution to assessment
+├── shopping-cart
+│   └── blank assessment
 └── README.md (this file)
 ```
 
