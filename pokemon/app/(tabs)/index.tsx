@@ -1,12 +1,42 @@
-import { Image, StyleSheet, Platform } from "react-native";
+import {
+  Image,
+  StyleSheet,
+  Platform,
+  SafeAreaView,
+  FlatList,
+} from "react-native";
 
 import { HelloWave } from "@/components/HelloWave";
-import ParallaxScrollView from "@/components/ParallaxScrollView";
 import { ThemedText } from "@/components/ThemedText";
 import { ThemedView } from "@/components/ThemedView";
+import { usePokemon, Pokemon } from "@/hooks/usePokemon";
+import { ActivityIndicator } from "react-native";
 
 export default function HomeScreen() {
-  return <HelloWave />;
+  const { pokemon, loadMore } = usePokemon();
+  return (
+    <SafeAreaView style={{ flex: 1 }}>
+      <HelloWave />
+      <FlatList
+        windowSize={20}
+        removeClippedSubviews
+        data={pokemon}
+        keyExtractor={(item) => item.name}
+        renderItem={({ item }) => (
+          <ThemedView style={styles.stepContainer}>
+            <ThemedText>{item.name}</ThemedText>
+            <Image source={{ uri: item.sprite }} style={{ height: 100, width: 100 }} />
+          </ThemedView>
+        )}
+        onEndReached={loadMore}
+        ListFooterComponent={() => (
+          <ThemedView style={styles.stepContainer}>
+            <ActivityIndicator size="large" />
+          </ThemedView>
+        )}
+      />
+    </SafeAreaView>
+  );
 }
 
 const styles = StyleSheet.create({
